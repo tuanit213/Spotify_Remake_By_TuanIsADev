@@ -9,6 +9,9 @@ export type Track = {
   genre?: string;
   country?: "VN" | "GLOBAL";
   year?: number;
+  previewUrl?: string;
+  sourceUrl?: string;
+  provider?: "local" | "itunes";
 };
 
 export type Playlist = {
