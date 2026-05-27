@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { genres, playlists, searchCatalog, sessionKey, tracks, type Playlist, type Track, type UserSession } from "@/lib/music";
+import { genres, normalizeSearchValue, playlists, searchCatalog, sessionKey, tracks, type Playlist, type Track, type UserSession } from "@/lib/music";
 
 type TracksApiResponse = {
   total: number;
@@ -66,6 +66,31 @@ function getSessionSnapshot() {
 
 function emitSessionChanged() {
   window.dispatchEvent(new Event(sessionChangedEvent));
+}
+
+function rankTracksForQuery(catalog: Track[], query: string) {
+  const value = normalizeSearchValue(query);
+
+  if (!value) {
+    return [];
+  }
+
+  return [...catalog]
+    .filter((track) =>
+      [track.title, track.artist, track.album].some((field) => normalizeSearchValue(field).includes(value)),
+    )
+    .sort((first, second) => {
+      const firstTitle = normalizeSearchValue(first.title);
+      const secondTitle = normalizeSearchValue(second.title);
+      const firstStarts = firstTitle.startsWith(value) ? 0 : 1;
+      const secondStarts = secondTitle.startsWith(value) ? 0 : 1;
+
+      if (firstStarts !== secondStarts) {
+        return firstStarts - secondStarts;
+      }
+
+      return firstTitle.localeCompare(secondTitle);
+    });
 }
 
 export default function HomePage() {
@@ -150,6 +175,7 @@ function MusicApp({ session, onLogout }: { session: UserSession; onLogout: () =>
   const [searchError, setSearchError] = useState("");
 
   const playlistResults = useMemo(() => searchCatalog(query).playlists, [query]);
+  const searchSuggestions = useMemo(() => rankTracksForQuery(apiTracks, query).slice(0, 8), [apiTracks, query]);
   const activePlaylist = playlists.find((playlist) => playlist.id === activePlaylistId) ?? playlists[0];
 
   useEffect(() => {
@@ -214,7 +240,7 @@ function MusicApp({ session, onLogout }: { session: UserSession; onLogout: () =>
       <div className="grid h-[calc(100vh-92px)] grid-cols-1 gap-2 p-2 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[280px_minmax(0,1fr)_340px]">
         <Sidebar activePlaylist={activePlaylist} onSelectPlaylist={setActivePlaylistId} />
         <section className="scrollbar-soft overflow-y-auto rounded-lg bg-neutral-950">
-          <Header session={session} query={query} setQuery={setQuery} onLogout={onLogout} />
+          <Header session={session} query={query} setQuery={setQuery} suggestions={searchSuggestions} isSearching={isSearching} onSelectTrack={playTrack} onLogout={onLogout} />
           <Hero playlist={activePlaylist} onPlay={() => playTrack(activePlaylist.tracks[0])} />
           <div className="space-y-8 px-4 pb-8 sm:px-6">
             <QuickAccess onPlay={playTrack} />
@@ -262,7 +288,11 @@ function Sidebar({ activePlaylist, onSelectPlaylist }: { activePlaylist: Playlis
   );
 }
 
-function Header({ session, query, setQuery, onLogout }: { session: UserSession; query: string; setQuery: (query: string) => void; onLogout: () => void }) {
+function Header({ session, query, setQuery, suggestions, isSearching, onSelectTrack, onLogout }: { session: UserSession; query: string; setQuery: (query: string) => void; suggestions: Track[]; isSearching: boolean; onSelectTrack: (track: Track) => void; onLogout: () => void }) {
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const normalizedQuery = normalizeSearchValue(query);
+  const shouldShowSuggestions = isSearchFocused && normalizedQuery.length > 0;
+
   return (
     <header className="sticky top-0 z-20 flex flex-col gap-3 border-b border-white/5 bg-neutral-950/90 px-4 py-4 backdrop-blur md:flex-row md:items-center md:justify-between sm:px-6">
       <div className="flex items-center gap-2">
@@ -271,7 +301,58 @@ function Header({ session, query, setQuery, onLogout }: { session: UserSession; 
       </div>
       <div className="relative w-full md:max-w-md">
         <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500" size={18} />
-        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search songs, artists, albums" className="w-full rounded-lg border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm text-white outline-none transition focus:border-[#1ed760]" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => setIsSearchFocused(true)} onBlur={() => window.setTimeout(() => setIsSearchFocused(false), 120)} placeholder="Search Vietnamese songs" className="w-full rounded-lg border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm text-white outline-none transition focus:border-[#1ed760]" />
+        <AnimatePresence>
+          {shouldShowSuggestions ? (
+            <motion.div
+              initial={{ opacity: 0, y: -8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 8, scale: 1 }}
+              exit={{ opacity: 0, y: -6, scale: 0.98 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+              className="absolute left-0 right-0 top-full z-50 overflow-hidden rounded-lg border border-white/10 bg-neutral-900 shadow-2xl shadow-black/60"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 px-3 py-2 text-xs font-semibold uppercase text-neutral-500">
+                <span>Search suggestions</span>
+                <span>{isSearching ? "Loading" : "Starts first"}</span>
+              </div>
+              <div className="max-h-[360px] overflow-y-auto p-1">
+                {suggestions.length > 0 ? (
+                  suggestions.map((track, index) => {
+                    const startsWithQuery = normalizeSearchValue(track.title).startsWith(normalizedQuery);
+
+                    return (
+                      <motion.button
+                        initial={{ opacity: 0, x: -8 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: index * 0.025 }}
+                        key={`${track.provider ?? "local"}-${track.id}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          onSelectTrack(track);
+                          setQuery(track.title);
+                          setIsSearchFocused(false);
+                        }}
+                        className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-white/10"
+                      >
+                        <CoverImage src={track.cover} alt={track.title} className="size-11 rounded-lg object-cover" />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-2">
+                            <span className="truncate text-sm font-bold text-white">{track.title}</span>
+                            {startsWithQuery ? <span className="shrink-0 rounded bg-[#1ed760]/15 px-1.5 py-0.5 text-[10px] font-black uppercase text-[#1ed760]">Top</span> : null}
+                          </span>
+                          <span className="block truncate text-xs text-neutral-400">{track.artist} - {track.album}</span>
+                        </span>
+                        <Play size={16} className="text-neutral-500" fill="currentColor" />
+                      </motion.button>
+                    );
+                  })
+                ) : (
+                  <div className="px-3 py-6 text-sm text-neutral-400">Không tìm thấy bài phù hợp.</div>
+                )}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
       <div className="flex items-center justify-between gap-3 md:justify-end">
         <button className="grid size-9 place-items-center rounded-full bg-black/80 text-neutral-300 transition hover:text-white" aria-label="Notifications"><Bell size={18} /></button>
