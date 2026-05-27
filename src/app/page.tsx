@@ -25,8 +25,13 @@ import {
   Volume2,
 } from "lucide-react";
 import Image from "next/image";
-import { FormEvent, useMemo, useState, useSyncExternalStore } from "react";
+import { FormEvent, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { genres, playlists, searchCatalog, sessionKey, tracks, type Playlist, type Track, type UserSession } from "@/lib/music";
+
+type TracksApiResponse = {
+  total: number;
+  tracks: Track[];
+};
 
 const navItems = [
   { label: "Home", icon: Home },
@@ -140,9 +145,52 @@ function MusicApp({ session, onLogout }: { session: UserSession; onLogout: () =>
   const [currentTrack, setCurrentTrack] = useState<Track>(tracks[0]);
   const [isPlaying, setIsPlaying] = useState(true);
   const [liked, setLiked] = useState<Set<string>>(() => new Set([tracks[0].id, tracks[4].id]));
+  const [apiTracks, setApiTracks] = useState<Track[]>(tracks.filter((track) => track.country === "VN"));
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
-  const results = useMemo(() => searchCatalog(query), [query]);
+  const playlistResults = useMemo(() => searchCatalog(query).playlists, [query]);
   const activePlaylist = playlists.find((playlist) => playlist.id === activePlaylistId) ?? playlists[0];
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setIsSearching(true);
+      setSearchError("");
+
+      try {
+        const params = new URLSearchParams({ country: "VN", limit: "50" });
+
+        if (query.trim()) {
+          params.set("q", query.trim());
+        }
+
+        const response = await fetch(`/api/tracks?${params.toString()}`, { signal: controller.signal });
+
+        if (!response.ok) {
+          throw new Error("Search request failed");
+        }
+
+        const payload = (await response.json()) as TracksApiResponse;
+        setApiTracks(payload.tracks);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+
+        setSearchError("Không tải được danh sách nhạc Việt từ API.");
+      } finally {
+        if (!controller.signal.aborted) {
+          setIsSearching(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
 
   function playTrack(track: Track) {
     setCurrentTrack(track);
@@ -170,8 +218,8 @@ function MusicApp({ session, onLogout }: { session: UserSession; onLogout: () =>
           <Hero playlist={activePlaylist} onPlay={() => playTrack(activePlaylist.tracks[0])} />
           <div className="space-y-8 px-4 pb-8 sm:px-6">
             <QuickAccess onPlay={playTrack} />
-            <PlaylistShelf playlists={results.playlists} activeId={activePlaylistId} onSelect={setActivePlaylistId} />
-            <TrackTable tracks={results.tracks} currentTrack={currentTrack} liked={liked} onLike={toggleLiked} onPlay={playTrack} />
+            <PlaylistShelf playlists={playlistResults} activeId={activePlaylistId} onSelect={setActivePlaylistId} />
+            <TrackTable tracks={apiTracks} currentTrack={currentTrack} liked={liked} onLike={toggleLiked} onPlay={playTrack} isLoading={isSearching} error={searchError} />
             <GenreGrid />
           </div>
         </section>
@@ -283,12 +331,14 @@ function PlaylistShelf({ playlists: shelfPlaylists, activeId, onSelect }: { play
   );
 }
 
-function TrackTable({ tracks: tableTracks, currentTrack, liked, onLike, onPlay }: { tracks: Track[]; currentTrack: Track; liked: Set<string>; onLike: (id: string) => void; onPlay: (track: Track) => void }) {
+function TrackTable({ tracks: tableTracks, currentTrack, liked, onLike, onPlay, isLoading, error }: { tracks: Track[]; currentTrack: Track; liked: Set<string>; onLike: (id: string) => void; onPlay: (track: Track) => void; isLoading: boolean; error: string }) {
   return (
     <section>
-      <SectionTitle title="Popular tracks" action="Refresh" />
+      <SectionTitle title="Vietnam tracks" action={isLoading ? "Searching" : `${tableTracks.length} songs`} />
       <div className="overflow-hidden rounded-lg border border-white/10">
         <div className="hidden grid-cols-[48px_minmax(0,1.5fr)_minmax(0,1fr)_84px_56px] border-b border-white/10 px-4 py-3 text-xs font-semibold uppercase text-neutral-500 md:grid"><span>#</span><span>Title</span><span>Album</span><span className="flex items-center justify-end"><Clock3 size={15} /></span><span /></div>
+        {error ? <div className="border-b border-white/10 px-4 py-3 text-sm text-rose-300">{error}</div> : null}
+        {!error && !isLoading && tableTracks.length === 0 ? <div className="px-4 py-8 text-sm text-neutral-400">Không tìm thấy bài nhạc Việt phù hợp.</div> : null}
         <div className="divide-y divide-white/5">
           {tableTracks.map((track, index) => (
             <div key={track.id} className={`grid grid-cols-[1fr_auto] gap-3 px-3 py-3 transition hover:bg-white/5 md:grid-cols-[48px_minmax(0,1.5fr)_minmax(0,1fr)_84px_56px] md:items-center md:px-4 ${currentTrack.id === track.id ? "bg-[#1ed760]/10" : ""}`}>
